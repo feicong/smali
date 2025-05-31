@@ -1,0 +1,102 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整的 git 历史，用于版本号生成
+    
+    - name: Set up OpenJDK 11
+      uses: actions/setup-java@v4
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+    
+    - name: Cache Gradle packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+    
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+    
+    - name: Run tests
+      run: ./gradlew test
+    
+    - name: Build project
+      run: ./gradlew assemble
+    
+    - name: Build fat jars
+      run: ./gradlew smali:fatJar baksmali:fatJar
+    
+    - name: Find fat jar files
+      id: find-jars
+      run: |
+        echo "Finding fat jar files..."
+        find . -name "*-fat.jar" -type f
+        
+        # 设置输出变量
+        SMALI_JAR=$(find . -path "*/smali/build/libs/*-fat.jar" -type f | head -1)
+        BAKSMALI_JAR=$(find . -path "*/baksmali/build/libs/*-fat.jar" -type f | head -1)
+        
+        echo "smali-jar=${SMALI_JAR}" >> $GITHUB_OUTPUT
+        echo "baksmali-jar=${BAKSMALI_JAR}" >> $GITHUB_OUTPUT
+        
+        echo "Found smali jar: ${SMALI_JAR}"
+        echo "Found baksmali jar: ${BAKSMALI_JAR}"
+    
+    - name: Upload smali fat jar
+      uses: actions/upload-artifact@v4
+      if: steps.find-jars.outputs.smali-jar != ''
+      with:
+        name: smali-fat-jar
+        path: ${{ steps.find-jars.outputs.smali-jar }}
+        retention-days: 30
+    
+    - name: Upload baksmali fat jar
+      uses: actions/upload-artifact@v4
+      if: steps.find-jars.outputs.baksmali-jar != ''
+      with:
+        name: baksmali-fat-jar
+        path: ${{ steps.find-jars.outputs.baksmali-jar }}
+        retention-days: 30
+    
+    - name: Upload all build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts
+        path: |
+          smali/build/libs/
+          baksmali/build/libs/
+          dexlib2/build/libs/
+          util/build/libs/
+        retention-days: 30
+    
+    # 如果是 release 事件，将 fat jar 上传到 release
+    - name: Upload to Release
+      if: github.event_name == 'release' && github.event.action == 'published'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ${{ steps.find-jars.outputs.smali-jar }}
+          ${{ steps.find-jars.outputs.baksmali-jar }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
